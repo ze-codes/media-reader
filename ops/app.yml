@@ -1,0 +1,21 @@
+name: media-reader
+kind: service
+compose: docker-compose.yml
+service: media-reader
+container: media-reader
+default_port: 8099
+health_path: /api/health
+database: sqlite
+migration: idempotent
+qa:
+  default: fullstack
+  ui_paths:
+    - public/
+    - "*.css"
+  data_paths:
+    - src/db/
+    - "*.sql"
+  backend_paths:
+    - src/
+    - scripts/
+    - ops/

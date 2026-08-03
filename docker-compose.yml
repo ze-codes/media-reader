@@ -1,0 +1,65 @@
+services:
+  media-reader:
+    build: .
+    container_name: media-reader
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      - bgutil-pot-provider
+    environment:
+      - PORT=8099
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LLM_APP_URL=${LLM_APP_URL:-}
+      - LLM_APP_NAME=${LLM_APP_NAME:-}
+      - LLM_ENGINE_URL=${LLM_ENGINE_URL:-}
+      - LLM_MEDIA_READER_MODEL=${LLM_MEDIA_READER_MODEL:-}
+      - TRANSCRIPT_API_KEY=${TRANSCRIPT_API_KEY:-}
+      - YT_TRANSCRIBE_BACKEND=${YT_TRANSCRIBE_BACKEND:-faster-whisper}
+      - YT_FAST_WHISPER_MODEL=${YT_FAST_WHISPER_MODEL:-large-v3-turbo}
+      - YT_FAST_WHISPER_COMPUTE_TYPE=${YT_FAST_WHISPER_COMPUTE_TYPE:-int8}
+      - YT_FAST_WHISPER_BEAM_SIZE=${YT_FAST_WHISPER_BEAM_SIZE:-5}
+      - YT_FAST_WHISPER_TASK=${YT_FAST_WHISPER_TASK:-transcribe}
+      - YT_FAST_WHISPER_VAD_FILTER=${YT_FAST_WHISPER_VAD_FILTER:-1}
+    ports:
+      - "${MEDIA_READER_BIND_ADDRESS:-127.0.0.1}:${MEDIA_READER_PORT:-8099}:8099"
+    volumes:
+      - .:/app
+      - app_node_modules:/app/node_modules
+      - ${MEDIA_READER_COOKIE_DIR:-./cookies}:/cookies:ro
+      - chrome-session-data:/chrome-session:ro
+
+  # Mints ProofOfOrigin tokens for yt-dlp via the bgutil-ytdlp-pot-provider
+  # plugin, which contacts this server over HTTP at port 4416.
+  bgutil-pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: bgutil-pot-provider
+    restart: unless-stopped
+
+  # Long-lived Chromium with a persistent profile. Log in to YouTube once
+  # via the web noVNC UI (SSH-tunnel `127.0.0.1:13000:3000` then open
+  # http://localhost:13000), and the session keeps refreshing itself like
+  # any real user. yt-dlp in media-reader reads cookies fresh from this
+  # browser's profile via --cookies-from-browser.
+  chrome-session:
+    image: lscr.io/linuxserver/chromium:latest
+    container_name: chrome-session
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=Etc/UTC
+    volumes:
+      - chrome-session-data:/config
+    ports:
+      - "127.0.0.1:13000:3000"
+    shm_size: "1gb"
+
+volumes:
+  app_node_modules:
+  chrome-session-data:

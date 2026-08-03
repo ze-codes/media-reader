@@ -1,0 +1,26 @@
+[Unit]
+Description=Media Reader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=media-reader
+Group=media-reader
+WorkingDirectory=/opt/media-reader
+EnvironmentFile=/etc/media-reader/media-reader.env
+Environment=MEDIA_READER_DATA_DIR=/var/lib/media-reader
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/bun run start
+Restart=on-failure
+RestartSec=5
+StateDirectory=media-reader
+RuntimeDirectory=media-reader
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/media-reader
+
+[Install]
+WantedBy=multi-user.target

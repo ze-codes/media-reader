@@ -1,0 +1,8 @@
+.git
+.gstack
+node_modules
+data
+ops/artifacts
+*.log
+.env
+.env.*

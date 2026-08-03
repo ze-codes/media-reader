@@ -1,0 +1,24 @@
+{
+  "name": "media-reader",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Media sources → transcripts → LLM-transformed TL;DR + full articles",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "bun src/main.mjs",
+    "doctor": "bun src/doctor.mjs",
+    "test": "bun test",
+    "audit:public": "bun ops/audit-public.mjs",
+    "smoke:public": "bun ops/smoke-public.mjs"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "dompurify": "3.3.1",
+    "express": "^5.2.1",
+    "marked": "17.0.1"
+  },
+  "devDependencies": {
+    "playwright": "1.62.0"
+  }
+}

@@ -1,0 +1,35 @@
+node_modules/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+cookies/
+*.cookies.json
+*.cookies.txt
+
+# Persistent and generated runtime state
+data/
+runtime/
+private/
+hosted/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+uploads/
+cache/
+models/
+faster-whisper/
+
+# Logs and generated operational artifacts
+*.log
+logs/
+ops/artifacts/
+
+.DS_Store
+Thumbs.db
+.gstack/
+.superpowers/
