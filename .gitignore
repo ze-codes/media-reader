@@ -4,32 +4,32 @@ node_modules/
 .env
 .env.*
 !.env.example
-cookies/
+/cookies/
 *.cookies.json
 *.cookies.txt
 
 # Persistent and generated runtime state
-data/
-runtime/
-private/
-hosted/
+/data/
+/runtime/
+/private/
+/hosted/
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-uploads/
-cache/
-models/
-faster-whisper/
+/uploads/
+/cache/
+/models/
+/faster-whisper/
 
 # Logs and generated operational artifacts
 *.log
-logs/
-ops/artifacts/
+/logs/
+/ops/artifacts/
 
 .DS_Store
 Thumbs.db
-.gstack/
-.superpowers/
+/.gstack/
+/.superpowers/
