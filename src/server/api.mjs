@@ -22,6 +22,11 @@ import {
 } from '../services/worker-status.mjs';
 import { queueUploadedMedia, uploadResponse } from '../services/uploads-service.mjs';
 import { PUBLIC_DIR } from '../shared/paths.mjs';
+import {
+    maintenanceEnabled,
+    rejectMaintenanceMutation,
+    workerEnabled,
+} from '../shared/runtime-flags.mjs';
 
 export { workerStatusForVideos } from '../services/worker-status.mjs';
 
@@ -53,6 +58,7 @@ export function startServer(port) {
         res.setHeader('Referrer-Policy', 'same-origin');
         next();
     });
+    app.use('/api', rejectMaintenanceMutation);
     app.use(express.static(PUBLIC_DIR));
 
     // ── Channels ─────────────────────────────────────
@@ -258,7 +264,12 @@ export function startServer(port) {
     });
 
     app.get('/api/health', (req, res) => {
-        res.json({ ok: true, ts: new Date().toISOString() });
+        res.json({
+            ok: true,
+            maintenance: maintenanceEnabled(),
+            worker_enabled: workerEnabled(),
+            ts: new Date().toISOString(),
+        });
     });
 
     app.listen(port, '0.0.0.0', () => {
