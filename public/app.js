@@ -12,6 +12,8 @@ import {
     setVideoReadRequest,
     submitChannel,
     submitVideo,
+    CHUNKED_UPLOAD_THRESHOLD_BYTES,
+    uploadLargeMediaRequest,
     uploadMediaRequest,
 } from './api-client.mjs';
 import {
@@ -216,10 +218,15 @@ async function uploadMedia(file) {
     const originalButtonText = ui.uploadBtn.textContent;
     ui.uploadBtn.textContent = 'Uploading';
     try {
-        const body = new FormData();
-        body.append('media', file);
         uploadProgress.setUploadProgress({ visible: true, percent: 0, label: 'Starting upload...' });
-        const j = await uploadMediaRequest(body, { onProgress: uploadProgress.onUploadProgress });
+        let j;
+        if (file.size > CHUNKED_UPLOAD_THRESHOLD_BYTES) {
+            j = await uploadLargeMediaRequest(file, { onProgress: uploadProgress.onUploadProgress });
+        } else {
+            const body = new FormData();
+            body.append('media', file);
+            j = await uploadMediaRequest(body, { onProgress: uploadProgress.onUploadProgress });
+        }
         uploadProgress.setUploadProgress({ visible: true, percent: 100, label: 'Upload complete; queued for transcription.' });
 
         ui.uploadInput.value = '';

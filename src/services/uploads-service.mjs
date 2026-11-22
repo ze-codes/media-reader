@@ -5,7 +5,10 @@ import {
     LOCAL_UPLOADS_CHANNEL_ID,
     LOCAL_UPLOADS_CHANNEL_TITLE,
     LOCAL_UPLOADS_CHANNEL_URL,
+    appendUploadChunk,
+    finishChunkedUpload,
     parseMediaUploadRequest,
+    startChunkedUpload,
     UPLOAD_SOURCE,
 } from '../uploads/index.mjs';
 import { log } from '../shared/log.mjs';
@@ -21,10 +24,17 @@ export function uploadStatePayload(upload) {
 }
 
 export async function queueUploadedMedia(req, { broadcast = () => {} } = {}) {
-    let upload;
-    try {
-        upload = await parseMediaUploadRequest(req);
+    return queueStoredUpload(await parseMediaUploadRequest(req), { broadcast });
+}
 
+export { startChunkedUpload, appendUploadChunk };
+
+export function queueChunkedUpload(uploadId, { broadcast = () => {} } = {}) {
+    return queueStoredUpload(finishChunkedUpload(uploadId), { broadcast });
+}
+
+function queueStoredUpload(upload, { broadcast }) {
+    try {
         upsertChannel({
             id: LOCAL_UPLOADS_CHANNEL_ID,
             handle: null,
@@ -68,13 +78,11 @@ export async function queueUploadedMedia(req, { broadcast = () => {} } = {}) {
 
         return upload;
     } catch (err) {
-        if (upload) {
-            deleteUploadedMedia({
-                source_type: UPLOAD_SOURCE,
-                url: upload.url,
-                uploaded_path: upload.storedPath,
-            });
-        }
+        deleteUploadedMedia({
+            source_type: UPLOAD_SOURCE,
+            url: upload.url,
+            uploaded_path: upload.storedPath,
+        });
         throw err;
     }
 }

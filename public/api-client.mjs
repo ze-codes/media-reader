@@ -55,10 +55,47 @@ async function postJson(path, body) {
     return { ok: response.ok, status: response.status, payload };
 }
 
+// Cloudflare caps one request body at 100 MB; bigger files go up in chunks.
+export const CHUNKED_UPLOAD_THRESHOLD_BYTES = 90 * 1024 * 1024;
+const CHUNK_RETRIES = 4;
+
+export async function uploadLargeMediaRequest(file, { onProgress = () => {} } = {}) {
+    const { uploadId, chunkBytes } = await sendRequest('POST', api('/uploads/chunked'),
+        JSON.stringify({ filename: file.name, mimeType: file.type, size: file.size }), { contentType: 'application/json' });
+    const id = encodeURIComponent(uploadId);
+
+    let offset = 0;
+    while (offset < file.size) {
+        const chunk = file.slice(offset, offset + chunkBytes);
+        let result;
+        for (let attempt = 1; ; attempt++) {
+            try {
+                result = await sendRequest('POST', api(`/uploads/chunked/${id}/chunk?offset=${offset}`), chunk, {
+                    contentType: 'application/octet-stream',
+                    onProgress: (event) => onProgress({ lengthComputable: true, loaded: offset + event.loaded, total: file.size }),
+                });
+                break;
+            } catch (err) {
+                // 409 carries the offset the server has; resume from there.
+                if (err.status === 409 && Number.isSafeInteger(err.payload?.received) && err.payload.received !== offset) { result = err.payload; break; }
+                if (attempt >= CHUNK_RETRIES || (err.status && ![400, 409].includes(err.status) && err.status < 500)) throw err;
+                await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+            }
+        }
+        offset = result.received;
+    }
+    return sendRequest('POST', api(`/uploads/chunked/${id}/complete`), null);
+}
+
 export function uploadMediaRequest(body, { onProgress = () => {} } = {}) {
+    return sendRequest('POST', api('/uploads'), body, { onProgress });
+}
+
+function sendRequest(method, url, body, { contentType, onProgress = () => {} } = {}) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', api('/uploads'));
+        xhr.open(method, url);
+        if (contentType) xhr.setRequestHeader('Content-Type', contentType);
         xhr.responseType = 'json';
 
         xhr.upload.addEventListener('progress', (event) => {
@@ -72,6 +109,7 @@ export function uploadMediaRequest(body, { onProgress = () => {} } = {}) {
             } else {
                 const err = new Error(payload.error || xhr.statusText || `Upload failed (${xhr.status})`);
                 err.status = xhr.status;
+                err.payload = payload;
                 reject(err);
             }
         });
