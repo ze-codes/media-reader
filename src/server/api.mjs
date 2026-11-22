@@ -1,7 +1,7 @@
 import express from 'express';
 import {
     getChannel, listChannels,
-    deleteChannel, getVideo, listVideosForChannel, retryVideo,
+    deleteChannel, getVideo, listVideosForChannel, retryVideo, rewriteVideoArticle,
     deleteVideo, libraryCounts, listLibraryVideos, listYoutubeAuthBlockedVideos,
     getTranscriptSegments, setVideoRead, setVideoReadingProgress,
 } from '../db/index.mjs';
@@ -13,6 +13,7 @@ import {
     UPLOAD_SOURCE,
 } from '../uploads/index.mjs';
 import { ACTIVE_VIDEO_STATES, SSE_EVENTS } from '../domain/constants.mjs';
+import { ARTICLE_LANGUAGES } from '../llm/index.mjs';
 import { importChannelOrSingleVideo } from '../services/channel-imports.mjs';
 import { resolveAndQueueSingleVideo } from '../services/video-submissions.mjs';
 import {
@@ -249,6 +250,26 @@ export function startServer(port) {
             source_type: v.source_type,
         });
         res.json({ ok: true });
+    });
+
+    app.post('/api/videos/:id/rewrite', (req, res) => {
+        const v = getVideo(req.params.id);
+        if (!v) return res.status(404).json({ error: 'not found' });
+        const language = req.body?.language;
+        if (!Object.hasOwn(ARTICLE_LANGUAGES, language)) {
+            return res.status(400).json({ error: `language must be one of: ${Object.keys(ARTICLE_LANGUAGES).join(', ')}` });
+        }
+        if (ACTIVE_VIDEO_STATES.has(v.state)) return res.status(409).json({ error: 'video is still processing' });
+        if (!v.transcript) return res.status(409).json({ error: 'no transcript to rewrite yet' });
+        rewriteVideoArticle(req.params.id, language);
+        broadcastSSE(SSE_EVENTS.VIDEO_STATE, {
+            id: req.params.id,
+            state: 'queued',
+            channelId: v.channel_id,
+            title: v.title,
+            source_type: v.source_type,
+        });
+        res.json({ ok: true, language });
     });
 
     app.delete('/api/videos/:id', (req, res) => {

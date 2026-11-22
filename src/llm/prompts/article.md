@@ -11,7 +11,7 @@ You MUST respond with a single JSON object on the first line and nothing else â€
 - `tldr`: a markdown string. 8-14 bullet points capturing the core arguments, practical tools, named concepts, concrete numbers, studies, dates, people, and important caveats. Must be skim-readable. Start each bullet with `- `.
 - `article`: a markdown string. A complete, restructured article based on the transcript. Use `##` and `###` headings. Preserve the full arc of the conversation from beginning to end, including early framing, middle sections, later topics, future directions, and closing takeaways. Keep concrete examples, counterarguments, distinctions, practical recommendations, supporting explanations, side points, tangents that matter, and important rhetorical moves. Cut only filler words, repeated phrases, false starts, sponsor reads, and verbal clutter. Use the speaker's voice and meaning, but write in clean prose. Do not add facts, opinions, transitions, or conclusions that are not supported by the transcript.
 
-Write in English regardless of the transcript language.
+{{LANGUAGE_INSTRUCTION}}
 
 If the transcript is extremely short, incomplete, or mostly unintelligible, still produce both fields but note the limitation in a single italic sentence at the top of `article`.
 

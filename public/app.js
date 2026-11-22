@@ -8,6 +8,7 @@ import {
     fetchLibraryRequest,
     reloadYoutubeAccessRequest,
     retryVideoRequest,
+    rewriteArticleRequest,
     setReadingProgressRequest,
     setVideoReadRequest,
     submitChannel,
@@ -250,6 +251,25 @@ async function uploadMedia(file) {
 
 async function fetchFullVideo(videoId) {
     return fetchFullVideoRequest(videoId);
+}
+
+// The article's language: what the reader last asked for, else guessed from its text.
+function articleLanguage(video) {
+    if (video.article_language) return video.article_language;
+    const text = String(video.article || '');
+    const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+    return cjk > text.length * 0.2 ? 'zh' : 'en';
+}
+
+async function rewriteArticle(videoId, language) {
+    const result = await rewriteArticleRequest(videoId, language);
+    if (!result.ok) {
+        toast(`Rewrite failed: ${result.payload.error || result.status}`, 'error');
+        return;
+    }
+    toast(language === 'zh' ? 'Rewriting the article in Chinese...' : 'Rewriting the article in English...');
+    backToLibrary();
+    await Promise.all([fetchChannels(), fetchLibrary()]);
 }
 
 async function retryVideo(videoId) {
@@ -759,8 +779,10 @@ async function renderReader(videoId) {
     const initialProgressPercent = Math.round(initialProgress * 100);
     const isArticle = readerTab === 'article';
     const readerContent = isArticle ? renderArticleBody(full) : renderTranscriptBody(full);
+    const rewriteTo = articleLanguage(full) === 'zh' ? 'en' : 'zh';
     const copyActions = isArticle
         ? `
+            <button class="textbtn rewrite-language-btn" data-id="${full.id}" data-language="${rewriteTo}" type="button" title="Rewrite the article in ${rewriteTo === 'zh' ? 'Chinese' : 'English'} from the same transcript">${rewriteTo === 'zh' ? '中文' : 'English'}</button>
             <button class="textbtn copy-content-btn" data-id="${full.id}" data-copy-kind="tldr" type="button" aria-label="Copy TL;DR"><span class="hide-sm">Copy </span>TL;DR</button>
             <button class="textbtn copy-content-btn" data-id="${full.id}" data-copy-kind="article" type="button" aria-label="Copy article"><span class="hide-sm">Copy </span>Article</button>`
         : '<button class="textbtn copy-content-btn" data-id="' + escapeHtml(full.id) + '" data-copy-kind="transcript" type="button">Copy <span class="hide-sm">Transcript</span></button>';
@@ -817,6 +839,9 @@ async function renderReader(videoId) {
     });
     ui.main.querySelectorAll('.delete-video-btn').forEach(el => {
         el.addEventListener('click', () => deleteTranscript(el.dataset.id));
+    });
+    ui.main.querySelectorAll('.rewrite-language-btn').forEach(el => {
+        el.addEventListener('click', () => rewriteArticle(el.dataset.id, el.dataset.language));
     });
     ui.main.querySelectorAll('.nav-reader-btn').forEach(el => {
         el.addEventListener('click', () => {

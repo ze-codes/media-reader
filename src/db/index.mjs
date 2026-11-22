@@ -26,6 +26,7 @@ const VIDEO_MIGRATIONS = [
     ['file_size_bytes', 'INTEGER'],
     ['read_at', 'TEXT'],
     ['reading_progress', 'REAL NOT NULL DEFAULT 0'],
+    ['article_language', 'TEXT'],
 ];
 
 const ACTIVE_VIDEO_STATES = ['queued', 'fetching', 'transcribing', 'writing'];
@@ -340,6 +341,14 @@ export function setVideoError(id, error) {
     getDb().prepare(
         "UPDATE videos SET state = 'error', error = ?, updated_at = datetime('now') WHERE id = ?"
     ).run(String(error).slice(0, 2000), id);
+}
+
+// Re-queue a finished video to rewrite its article in `language`; the stored
+// transcript is reused, so only the article step runs again.
+export function rewriteVideoArticle(id, language) {
+    getDb().prepare(
+        "UPDATE videos SET article_language = ?, state = 'queued', error = NULL, updated_at = datetime('now') WHERE id = ?"
+    ).run(language, id);
 }
 
 export function retryVideo(id) {

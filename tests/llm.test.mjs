@@ -2,6 +2,25 @@ import { describe, expect, test } from 'bun:test';
 import { articleTransformStrategy, splitTranscriptByWords, transformTranscript } from '../src/llm/index.mjs';
 
 describe('llm transcript transforms', () => {
+    test('writes in the transcript language by default and in the requested language on every prompt', async () => {
+        const prompts = [];
+        const llm = async (systemPrompt) => {
+            prompts.push(systemPrompt);
+            const tldrOnly = systemPrompt.startsWith('You are consolidating');
+            return { text: JSON.stringify(tldrOnly ? { tldr: '- t' } : { tldr: '- t', article: 'A.' }), usage: {} };
+        };
+
+        await transformTranscript({ title: 'T', channel: 'C', transcript: '今天我们谈论彩礼', llm });
+        expect(prompts[0]).toContain('main language spoken in the transcript');
+        expect(prompts[0]).not.toContain('{{LANGUAGE_INSTRUCTION}}');
+
+        prompts.length = 0;
+        const long = Array.from({ length: 6001 }, (_, index) => `word${index + 1}`).join(' ');
+        await transformTranscript({ title: 'T', channel: 'C', transcript: long, language: 'zh', llm });
+        expect(prompts.length).toBe(4); // three sections plus the TLDR merge
+        for (const prompt of prompts) expect(prompt).toContain('Simplified Chinese');
+    });
+
     test('converts normalized provider usage to article cost without inventing prices', async () => {
         const result = await transformTranscript({
             title: 'Portable Provider',
