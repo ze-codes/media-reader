@@ -19,7 +19,7 @@ RUN apt-get update && \
         build-essential cmake git \
         curl ca-certificates unzip && \
     pip3 install --break-system-packages --no-cache-dir \
-        yt-dlp bgutil-ytdlp-pot-provider faster-whisper && \
+        yt-dlp bgutil-ytdlp-pot-provider faster-whisper "av<17" && \
     curl -fsSL https://deno.land/install.sh | sh -s -- -y && \
     mv /root/.deno/bin/deno /usr/local/bin/deno && \
     rm -rf /root/.deno /var/lib/apt/lists/*
