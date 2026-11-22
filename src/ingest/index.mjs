@@ -667,6 +667,16 @@ export async function fetchAudio(video) {
         }
     }
 
+    // The tv/web clients sometimes expose no audio formats; yt-dlp's default clients do.
+    if (source === SOURCES.YOUTUBE && /Requested format is not available/i.test(downloadError?.message || '')) {
+        try {
+            await run('yt-dlp', audioArgs(youtubeArgs({ playerClients: 'default' }), formatSelector), { timeoutMs: 15 * 60 * 1000 });
+            downloadError = null;
+        } catch (err) {
+            downloadError = err;
+        }
+    }
+
     if (downloadError) {
         if (source === SOURCES.YOUTUBE && isYoutubeAuthBlockedError(downloadError?.message)) {
             noteYoutubeAudioBlocked();
