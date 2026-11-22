@@ -22,6 +22,10 @@ const {
     deleteVideo,
     upsertChannel,
     upsertVideoQueued,
+    listArticleVersions,
+    nextQueuedArticleVersion,
+    requestArticleVersion,
+    setArticleVersion,
 } = await import('../src/db/index.mjs');
 
 afterAll(() => {
@@ -186,5 +190,33 @@ describe('video queue persistence', () => {
         expect(getDb().prepare('SELECT COUNT(*) AS count FROM transcript_segments WHERE video_id = ?').get('cascade-one').count).toBe(0);
         expect(deleteChannel('UCcascade')).toBeTruthy();
         expect(getDb().prepare('SELECT COUNT(*) AS count FROM transcript_segments WHERE video_id = ?').get('cascade-two').count).toBe(0);
+    });
+});
+
+describe('article versions in other languages', () => {
+    test('queue once, keep finished text, retry only failures, wait for the video, go with it', () => {
+        upsertChannel({ id: 'UClang', title: 'Lang channel', url: 'https://example.com/lang', status: 'single' });
+        upsertVideoQueued({ id: 'lang-video', channelId: 'UClang', title: 'Talk', url: 'https://www.youtube.com/watch?v=langvideo1' });
+
+        // Asked for while the video is still processing: queued, but not picked yet.
+        expect(requestArticleVersion('lang-video', 'zh').state).toBe('queued');
+        expect(nextQueuedArticleVersion()).toBeNull();
+
+        setVideoState('lang-video', 'done', { article: 'An article.', tldr: '- t', article_language: 'en' });
+        expect(nextQueuedArticleVersion()).toMatchObject({ video_id: 'lang-video', language: 'zh' });
+
+        setArticleVersion('lang-video', 'zh', { state: 'done', tldr: '- 中', article: '中文文章。' });
+        expect(requestArticleVersion('lang-video', 'zh')).toMatchObject({ state: 'done', article: '中文文章。' });
+        expect(nextQueuedArticleVersion()).toBeNull();
+
+        setArticleVersion('lang-video', 'zh', { state: 'error', error: 'timed out' });
+        expect(requestArticleVersion('lang-video', 'zh')).toMatchObject({ state: 'queued', error: null });
+
+        const listed = listLibraryVideos({ query: 'Talk' }).videos.find(video => video.id === 'lang-video');
+        expect(JSON.parse(listed.version_states)).toEqual({ zh: 'queued' });
+        expect(listed.article_language).toBe('en');
+
+        deleteVideo('lang-video');
+        expect(listArticleVersions('lang-video')).toEqual([]);
     });
 });
