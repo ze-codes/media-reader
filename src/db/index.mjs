@@ -55,11 +55,16 @@ export function getDb() {
     return db;
 }
 
-// Articles written before languages were tracked get theirs from their own text.
-function backfillArticleLanguages(database) {
-    const rows = database.prepare('SELECT id, article FROM videos WHERE article IS NOT NULL AND article_language IS NULL').all();
+// An article's language comes from its own text. This fills it in for articles
+// written before languages were tracked, and corrects ones a failed rewrite (#3)
+// labelled with the language it was asked for rather than the one it is in.
+export function backfillArticleLanguages(database) {
+    const rows = database.prepare('SELECT id, article, article_language FROM videos WHERE article IS NOT NULL').all();
     const update = database.prepare('UPDATE videos SET article_language = ? WHERE id = ?');
-    for (const row of rows) update.run(guessLanguage(row.article), row.id);
+    for (const row of rows) {
+        const language = guessLanguage(row.article);
+        if (language !== row.article_language) update.run(language, row.id);
+    }
 }
 
 // ─── Channels ───────────────────────────────────────────────

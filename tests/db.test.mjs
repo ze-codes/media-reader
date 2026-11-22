@@ -26,6 +26,7 @@ const {
     nextQueuedArticleVersion,
     requestArticleVersion,
     setArticleVersion,
+    backfillArticleLanguages,
 } = await import('../src/db/index.mjs');
 
 afterAll(() => {
@@ -218,5 +219,17 @@ describe('article versions in other languages', () => {
 
         deleteVideo('lang-video');
         expect(listArticleVersions('lang-video')).toEqual([]);
+    });
+
+    test('startup labels each article with the language it is written in, fixing stale labels', () => {
+        upsertVideoQueued({ id: 'stale-label', channelId: 'UClang', title: 'Stale', url: 'https://www.youtube.com/watch?v=stalelabel1' });
+        // A failed rewrite (#3) stored 'zh' while the article stayed English.
+        setVideoState('stale-label', 'done', { article: 'An English article about trains.', article_language: 'zh' });
+        upsertVideoQueued({ id: 'no-label', channelId: 'UClang', title: 'Old', url: 'https://www.youtube.com/watch?v=nolabel0001' });
+        setVideoState('no-label', 'done', { article: '一篇关于火车的中文文章。' });
+
+        backfillArticleLanguages(getDb());
+        expect(getVideo('stale-label').article_language).toBe('en');
+        expect(getVideo('no-label').article_language).toBe('zh');
     });
 });

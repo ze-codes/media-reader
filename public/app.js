@@ -323,6 +323,7 @@ async function requestVersion(videoId, language) {
         toast(`Could not write the ${LANGUAGE_LABELS[language]} version: ${result.payload.error || result.status}`, 'error');
         return false;
     }
+    state.trackedVideoIds.add(videoId); // so its ready or failed toast shows
     // Show it queued right away; the server's events refresh it from here.
     for (const video of [fullCache.get(videoId), allVideos().find(item => item.id === videoId)]) {
         if (video) video.versions = { ...video.versions, [language]: { state: 'queued', updated_at: null } };
@@ -346,12 +347,13 @@ async function pickLanguage(videoId, language, { inReader = false } = {}) {
         openReader(videoId);
         return;
     }
+    if (state.readerVideoId !== videoId) return; // moved on while the request was out
     stopReadingProgressTracking({ flush: true });
     renderReader(videoId);
 }
 
 async function retryVersion(videoId, language) {
-    if (await requestVersion(videoId, language)) renderReader(videoId);
+    if (await requestVersion(videoId, language) && state.readerVideoId === videoId) renderReader(videoId);
 }
 
 function formatClock(sqliteTime) {
@@ -398,10 +400,13 @@ function renderVersionPanel(full, language) {
 }
 
 // A version finished or failed while its video is open: redraw the reader in place.
+// Events can overlap, so only the newest fetch may redraw.
+let readerRefreshSeq = 0;
 async function refreshOpenReader(videoId) {
+    const seq = ++readerRefreshSeq;
     const progress = readerProgressSession?.videoId === videoId ? readingProgressForWindow() : null;
     const full = await fetchFullVideo(videoId);
-    if (!full || state.readerVideoId !== videoId) return;
+    if (!full || seq !== readerRefreshSeq || state.readerVideoId !== videoId) return;
     if (progress != null) full.reading_progress = progress;
     fullCache.set(videoId, full);
     renderReader(videoId);
@@ -987,7 +992,7 @@ async function renderReader(videoId) {
         });
     });
     ui.main.querySelectorAll('.copy-content-btn').forEach(el => {
-        el.addEventListener('click', () => copyGeneratedText(el.dataset.id, el.dataset.copyKind));
+        el.addEventListener('click', () => copyGeneratedText(el.dataset.id, el.dataset.copyKind, { fromReader: true }));
     });
     ui.main.querySelectorAll('.delete-video-btn').forEach(el => {
         el.addEventListener('click', () => deleteTranscript(el.dataset.id));
@@ -1156,13 +1161,13 @@ function firstBullets(markdown, count) {
     return lines.slice(0, count).join('\n');
 }
 
-async function copyGeneratedText(videoId, kind) {
+async function copyGeneratedText(videoId, kind, { fromReader = false } = {}) {
     let fullData = fullCache.get(videoId);
     if (!fullData) {
         fullData = await fetchFullVideo(videoId);
         if (fullData) fullCache.set(videoId, fullData);
     }
-    const shown = fullData ? shownArticle(fullData, readerLanguage(fullData)) : null;
+    const shown = fullData ? shownArticle(fullData, fromReader ? readerLanguage(fullData) : mainLanguage(fullData)) : null;
     const text = kind === 'article'
         ? shown && `# ${fullData.title || ''}\n\n## TL;DR\n${shown.tldr || ''}\n\n${shown.article || ''}`
         : kind === 'transcript' ? fullData?.transcript : shown?.tldr;

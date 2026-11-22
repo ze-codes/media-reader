@@ -278,10 +278,12 @@ export function startServer(port) {
         const v = getVideo(req.params.id);
         if (!v) return res.status(404).json({ error: 'not found' });
         const language = req.body?.language;
-        if (!Object.hasOwn(ARTICLE_LANGUAGES, language)) {
+        if (typeof language !== 'string' || !Object.hasOwn(ARTICLE_LANGUAGES, language)) {
             return res.status(400).json({ error: `language must be one of: ${Object.keys(ARTICLE_LANGUAGES).join(', ')}` });
         }
         if (language === v.article_language) return res.status(409).json({ error: 'the article is already in that language' });
+        // Versions queued earlier wait for a failed video and run once a retry finishes it.
+        if (v.state === 'error') return res.status(409).json({ error: 'this video failed; retry it first' });
         const version = requestArticleVersion(v.id, language);
         broadcastSSE(SSE_EVENTS.VIDEO_STATE, {
             id: v.id,
