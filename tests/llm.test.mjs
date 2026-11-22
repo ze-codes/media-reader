@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { articleTransformStrategy, splitTranscriptByWords, transformTranscript } from '../src/llm/index.mjs';
+import { articleTransformStrategy, guessTranscriptLanguage, splitTranscriptByWords, transformTranscript } from '../src/llm/index.mjs';
 
 describe('llm transcript transforms', () => {
     test('writes in the transcript language by default and in the requested language on every prompt', async () => {
@@ -19,6 +19,18 @@ describe('llm transcript transforms', () => {
         await transformTranscript({ title: 'T', channel: 'C', transcript: long, language: 'zh', llm });
         expect(prompts.length).toBe(4); // three sections plus the TLDR merge
         for (const prompt of prompts) expect(prompt).toContain('Simplified Chinese');
+
+        // Default language on a sectioned transcript is decided once, not per slice.
+        prompts.length = 0;
+        await transformTranscript({ title: 'T', channel: 'C', transcript: long, llm });
+        for (const prompt of prompts) expect(prompt).toContain('Write in English regardless');
+    });
+
+    test('guesses Chinese against English by characters per word, ignoring code and markup', () => {
+        expect(guessTranscriptLanguage('今天我们谈论一下男女双方彩礼的问题')).toBe('zh');
+        expect(guessTranscriptLanguage('## Notes\n- We talk about the bride price today.')).toBe('en');
+        const chineseWithCode = '这个函数很重要，我们一起看一下。'.repeat(20) + '\n```js\nconst x = foo(bar, baz) + 1;\n```';
+        expect(guessTranscriptLanguage(chineseWithCode)).toBe('zh');
     });
 
     test('converts normalized provider usage to article cost without inventing prices', async () => {

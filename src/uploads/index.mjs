@@ -1,6 +1,6 @@
 import Busboy from 'busboy';
 import { randomUUID } from 'crypto';
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, truncateSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'fs';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path';
 import { uploadDir } from '../shared/paths.mjs';
 
@@ -278,18 +278,34 @@ export function parseMediaUploadRequest(req) {
 // so large files arrive as consecutive chunks appended to one .part file.
 export const UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
 const CHUNKED_SESSION_IDLE_MS = 60 * 60 * 1000;
+export const MAX_CHUNKED_SESSIONS = 4;
 const chunkedSessions = new Map();
 
-function sweepIdleChunkedSessions(now = Date.now()) {
+// Drops idle sessions, then any .part file on disk no live session owns and
+// untouched for the idle window (left by a restart or a crash).
+export function sweepIdleChunkedSessions(now = Date.now()) {
     for (const [uuid, session] of chunkedSessions) {
         if (session.busy || now - session.touchedAt < CHUNKED_SESSION_IDLE_MS) continue;
         chunkedSessions.delete(uuid);
         cleanupUpload(session.meta);
     }
+    const dir = uploadDir();
+    if (!existsSync(dir)) return;
+    const live = new Set([...chunkedSessions.values()].map(session => session.meta.tmpPath));
+    for (const name of readdirSync(dir)) {
+        const path = join(dir, name);
+        if (!name.endsWith('.part') || live.has(path)) continue;
+        try {
+            if (now - statSync(path).mtimeMs >= CHUNKED_SESSION_IDLE_MS) rmSync(path, { force: true });
+        } catch {}
+    }
 }
 
 export function startChunkedUpload({ filename, mimeType, size } = {}) {
     sweepIdleChunkedSessions();
+    if (chunkedSessions.size >= MAX_CHUNKED_SESSIONS) {
+        throw httpError(429, 'Too many uploads in progress. Finish or wait for one to expire.');
+    }
     const validation = validateUploadFile({ filename, mimeType });
     if (!validation.ok) throw httpError(validation.status, validation.error);
     const expectedBytes = Number(size);
