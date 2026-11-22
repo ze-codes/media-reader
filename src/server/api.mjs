@@ -26,6 +26,7 @@ import {
     queueChunkedUpload,
     queueUploadedMedia,
     startChunkedUpload,
+    sweepIdleChunkedSessions,
     uploadResponse,
 } from '../services/uploads-service.mjs';
 import { PUBLIC_DIR } from '../shared/paths.mjs';
@@ -47,6 +48,8 @@ export function broadcastSSE(event, data) {
 }
 
 export function startServer(port) {
+    sweepIdleChunkedSessions();
+    setInterval(() => sweepIdleChunkedSessions(), 15 * 60 * 1000).unref?.();
     const app = express();
     app.use(express.json({ limit: '64kb' }));
     app.use((req, res, next) => {

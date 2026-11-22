@@ -18,6 +18,14 @@ export const ARTICLE_LANGUAGES = Object.freeze({
 });
 const SAME_LANGUAGE_INSTRUCTION = 'Write in the main language spoken in the transcript. If it mixes languages, use the dominant one.';
 
+// Chinese characters against Latin words; a Chinese character is roughly one word.
+export function guessTranscriptLanguage(text) {
+    const value = String(text || '');
+    const cjk = (value.match(/[\u4e00-\u9fff]/g) || []).length;
+    const latinWords = (value.match(/[A-Za-z]+/g) || []).length;
+    return cjk > latinWords ? 'zh' : 'en';
+}
+
 function languageInstruction(language) {
     return ARTICLE_LANGUAGES[language] || SAME_LANGUAGE_INSTRUCTION;
 }
@@ -256,7 +264,9 @@ async function transformVeryLongTranscript({ title, channel, transcript, languag
 export async function transformTranscript({ title, channel, transcript, language = null, llm = transformWithLLM }) {
     const transcriptWords = wordCount(transcript);
     if (articleTransformStrategy(transcriptWords) === 'sectioned') {
-        return transformVeryLongTranscript({ title, channel, transcript, language, llm });
+        // Each section sees only its slice, so pick the language once for all of them.
+        // shortcut: only tells Chinese from English, the two languages the reader offers; add a detector for others.
+        return transformVeryLongTranscript({ title, channel, transcript, language: language || guessTranscriptLanguage(transcript), llm });
     }
 
     const userPrompt = [

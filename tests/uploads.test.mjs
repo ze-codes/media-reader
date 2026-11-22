@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
@@ -10,9 +10,11 @@ import {
     isLocalUpload,
     localMediaUrl,
     mediaTitleFromFilename,
+    MAX_CHUNKED_SESSIONS,
     MAX_UPLOAD_BYTES,
     parseMediaUploadRequest,
     startChunkedUpload,
+    sweepIdleChunkedSessions,
     validateUploadFile,
 } from '../src/uploads/index.mjs';
 
@@ -139,6 +141,33 @@ describe('chunked media uploads', () => {
             expect(upload.storedPath.startsWith(join(tmp, 'uploads'))).toBe(true);
             expect(readFileSync(upload.storedPath, 'utf8')).toBe('abcdefghijkl');
             expect(() => finishChunkedUpload(uploadId)).toThrow('not found');
+        });
+    });
+
+    test('removes orphaned partial files from disk and caps open uploads', async () => {
+        await withDataDir(async (tmp) => {
+            const dir = join(tmp, 'uploads');
+            mkdirSync(dir, { recursive: true });
+            const orphan = join(dir, 'left-by-a-restart.mp4.part');
+            const recent = join(dir, 'still-arriving.mp4.part');
+            writeFileSync(orphan, 'partial');
+            writeFileSync(recent, 'partial');
+            const twoHoursAgo = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+            utimesSync(orphan, twoHoursAgo, twoHoursAgo);
+
+            sweepIdleChunkedSessions();
+            expect(existsSync(orphan)).toBe(false);
+            expect(existsSync(recent)).toBe(true);
+
+            const ids = [];
+            for (let i = 0; i < MAX_CHUNKED_SESSIONS; i++) {
+                ids.push(startChunkedUpload({ filename: `clip${i}.mp3`, size: 4 }).uploadId);
+            }
+            expect(() => startChunkedUpload({ filename: 'one-more.mp3', size: 4 })).toThrow('Too many uploads');
+            for (const id of ids) {
+                await appendUploadChunk(id, 0, chunkRequest('abcd'));
+                finishChunkedUpload(id);
+            }
         });
     });
 

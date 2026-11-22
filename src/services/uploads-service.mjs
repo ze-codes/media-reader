@@ -9,6 +9,7 @@ import {
     finishChunkedUpload,
     parseMediaUploadRequest,
     startChunkedUpload,
+    sweepIdleChunkedSessions,
     UPLOAD_SOURCE,
 } from '../uploads/index.mjs';
 import { log } from '../shared/log.mjs';
@@ -27,7 +28,7 @@ export async function queueUploadedMedia(req, { broadcast = () => {} } = {}) {
     return queueStoredUpload(await parseMediaUploadRequest(req), { broadcast });
 }
 
-export { startChunkedUpload, appendUploadChunk };
+export { startChunkedUpload, appendUploadChunk, sweepIdleChunkedSessions };
 
 export function queueChunkedUpload(uploadId, { broadcast = () => {} } = {}) {
     return queueStoredUpload(finishChunkedUpload(uploadId), { broadcast });

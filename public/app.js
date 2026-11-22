@@ -253,12 +253,12 @@ async function fetchFullVideo(videoId) {
     return fetchFullVideoRequest(videoId);
 }
 
-// The article's language: what the reader last asked for, else guessed from its text.
+// Judged from the text itself: the stored choice can be stale after a failed rewrite.
 function articleLanguage(video) {
-    if (video.article_language) return video.article_language;
     const text = String(video.article || '');
     const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-    return cjk > text.length * 0.2 ? 'zh' : 'en';
+    const latinWords = (text.match(/[A-Za-z]+/g) || []).length;
+    return cjk > latinWords ? 'zh' : 'en';
 }
 
 async function rewriteArticle(videoId, language) {

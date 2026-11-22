@@ -231,7 +231,9 @@ export async function workerLoop() {
                 await delayAfterYoutubeJob(video);
                 continue;
             }
-            setVideoError(video.id, msg);
+            // A failed rewrite must not hide the article the video already has.
+            if (video.article) setVideoState(video.id, VIDEO_STATES.DONE, { error: `Rewrite failed: ${msg}` });
+            else setVideoError(video.id, msg);
             broadcast(SSE_EVENTS.VIDEO_ERROR, {
                 id: video.id,
                 channelId: video.channel_id,
