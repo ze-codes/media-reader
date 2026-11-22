@@ -20,7 +20,13 @@ import {
     publicVideo,
     workerStatusForVideos,
 } from '../services/worker-status.mjs';
-import { queueUploadedMedia, uploadResponse } from '../services/uploads-service.mjs';
+import {
+    appendUploadChunk,
+    queueChunkedUpload,
+    queueUploadedMedia,
+    startChunkedUpload,
+    uploadResponse,
+} from '../services/uploads-service.mjs';
 import { PUBLIC_DIR } from '../shared/paths.mjs';
 import {
     maintenanceEnabled,
@@ -164,6 +170,38 @@ export function startServer(port) {
             const status = err.status || 500;
             log(status >= 500 ? 'error' : 'warn', 'api', `upload failed: ${err.message}`);
             res.status(status).json({ error: err.message || 'upload failed' });
+        }
+    });
+
+    // Large files come in chunks (each under the 100 MB proxy body cap): start,
+    // append each chunk at its byte offset, then complete to queue it.
+    const uploadError = (res, err) => {
+        const status = err.status || 500;
+        log(status >= 500 ? 'error' : 'warn', 'api', `upload failed: ${err.message}`);
+        res.status(status).json({ error: err.message || 'upload failed', received: err.received });
+    };
+
+    app.post('/api/uploads/chunked', (req, res) => {
+        try {
+            res.json(startChunkedUpload(req.body || {}));
+        } catch (err) {
+            uploadError(res, err);
+        }
+    });
+
+    app.post('/api/uploads/chunked/:id/chunk', async (req, res) => {
+        try {
+            res.json(await appendUploadChunk(req.params.id, req.query.offset, req));
+        } catch (err) {
+            uploadError(res, err);
+        }
+    });
+
+    app.post('/api/uploads/chunked/:id/complete', (req, res) => {
+        try {
+            res.json(uploadResponse(queueChunkedUpload(req.params.id, { broadcast: broadcastSSE })));
+        } catch (err) {
+            uploadError(res, err);
         }
     });
 

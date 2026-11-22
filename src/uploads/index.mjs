@@ -1,6 +1,6 @@
 import Busboy from 'busboy';
 import { randomUUID } from 'crypto';
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, truncateSync, writeFileSync } from 'fs';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path';
 import { uploadDir } from '../shared/paths.mjs';
 
@@ -272,4 +272,136 @@ export function parseMediaUploadRequest(req) {
 
         req.pipe(busboy);
     });
+}
+
+// Chunked uploads: a proxy in front (Cloudflare) caps one request body at 100 MB,
+// so large files arrive as consecutive chunks appended to one .part file.
+export const UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
+const CHUNKED_SESSION_IDLE_MS = 60 * 60 * 1000;
+const chunkedSessions = new Map();
+
+function sweepIdleChunkedSessions(now = Date.now()) {
+    for (const [uuid, session] of chunkedSessions) {
+        if (session.busy || now - session.touchedAt < CHUNKED_SESSION_IDLE_MS) continue;
+        chunkedSessions.delete(uuid);
+        cleanupUpload(session.meta);
+    }
+}
+
+export function startChunkedUpload({ filename, mimeType, size } = {}) {
+    sweepIdleChunkedSessions();
+    const validation = validateUploadFile({ filename, mimeType });
+    if (!validation.ok) throw httpError(validation.status, validation.error);
+    const expectedBytes = Number(size);
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0) throw httpError(400, 'Uploaded file is empty.');
+    if (expectedBytes > MAX_UPLOAD_BYTES) {
+        throw httpError(413, `File is too large. Maximum upload size is ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB.`);
+    }
+
+    const currentUploadDir = uploadDir();
+    mkdirSync(currentUploadDir, { recursive: true });
+    const uuid = randomUUID();
+    const storedName = `${uuid}-${safeStoredFilename(validation.originalFilename, validation.ext)}`;
+    const meta = {
+        id: `upload:${uuid}`,
+        uuid,
+        originalFilename: validation.originalFilename,
+        title: validation.title,
+        mimeType: validation.mimeType,
+        sizeBytes: 0,
+        tmpPath: join(currentUploadDir, `${storedName}.part`),
+        storedPath: join(currentUploadDir, storedName),
+        url: localMediaUrl(uuid, validation.originalFilename),
+    };
+    writeFileSync(meta.tmpPath, '', { flag: 'wx' });
+    chunkedSessions.set(uuid, { meta, expectedBytes, busy: false, touchedAt: Date.now() });
+    return { uploadId: uuid, chunkBytes: UPLOAD_CHUNK_BYTES };
+}
+
+function chunkedSession(uploadId) {
+    const session = chunkedSessions.get(String(uploadId || ''));
+    if (!session) throw httpError(404, 'Upload not found or expired. Start the upload again.');
+    return session;
+}
+
+// Appends one request body at `offset`. A retried chunk the server already has
+// is acknowledged without rewriting; any other offset mismatch is a 409 that
+// tells the client where to resume.
+export function appendUploadChunk(uploadId, offset, req) {
+    let session;
+    try {
+        session = chunkedSession(uploadId);
+    } catch (err) {
+        req.resume?.();
+        return Promise.reject(err);
+    }
+    const { meta, expectedBytes } = session;
+    const at = Number(offset);
+    const length = Number(req.headers?.['content-length']);
+    const conflict = () => Object.assign(httpError(409, `Expected offset ${meta.sizeBytes}.`), { received: meta.sizeBytes });
+
+    if (session.busy) { req.resume?.(); return Promise.reject(conflict()); }
+    if (Number.isSafeInteger(length) && at + length === meta.sizeBytes) {
+        req.resume?.();
+        return Promise.resolve({ received: meta.sizeBytes });
+    }
+    if (!Number.isSafeInteger(at) || at !== meta.sizeBytes) { req.resume?.(); return Promise.reject(conflict()); }
+
+    session.busy = true;
+    session.touchedAt = Date.now();
+    const limit = Math.min(UPLOAD_CHUNK_BYTES, expectedBytes - meta.sizeBytes);
+    return new Promise((resolvePromise, rejectPromise) => {
+        const out = createWriteStream(meta.tmpPath, { flags: 'a' });
+        let written = 0;
+        let failed = null;
+        let aborted = false;
+        req.on('data', chunk => {
+            written += chunk.length;
+            if (written > limit && !failed) {
+                failed = httpError(413, 'Chunk is larger than the remaining file size.');
+                req.unpipe(out);
+                out.end();
+                req.resume();
+            }
+        });
+        // A dropped connection keeps the session: the chunk is rolled back and can be resent.
+        const abort = () => { if (!failed) { aborted = true; failed = httpError(400, 'Chunk upload was interrupted.'); } out.end(); };
+        req.on('error', abort);
+        req.on('aborted', abort);
+        req.on('close', () => { if (!req.readableEnded) abort(); });
+        out.on('error', err => { failed ||= httpError(500, `Could not store upload: ${err.message}`); });
+        out.on('close', () => {
+            session.busy = false;
+            session.touchedAt = Date.now();
+            if (failed) {
+                if (aborted) {
+                    truncateSync(meta.tmpPath, meta.sizeBytes);
+                } else {
+                    chunkedSessions.delete(meta.uuid);
+                    cleanupUpload(meta);
+                }
+                rejectPromise(failed);
+                return;
+            }
+            meta.sizeBytes += written;
+            resolvePromise({ received: meta.sizeBytes });
+        });
+        req.pipe(out);
+    });
+}
+
+export function finishChunkedUpload(uploadId) {
+    const session = chunkedSession(uploadId);
+    const { meta, expectedBytes } = session;
+    if (session.busy || meta.sizeBytes !== expectedBytes) {
+        throw httpError(409, `Upload incomplete: received ${meta.sizeBytes} of ${expectedBytes} bytes.`);
+    }
+    chunkedSessions.delete(meta.uuid);
+    if (existsSync(meta.storedPath)) {
+        cleanupUpload(meta);
+        throw httpError(500, 'Upload storage collision. Try again.');
+    }
+    renameSync(meta.tmpPath, meta.storedPath);
+    meta.tmpPath = null;
+    return meta;
 }
