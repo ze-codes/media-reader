@@ -1,7 +1,8 @@
 import express from 'express';
 import {
     getChannel, listChannels,
-    deleteChannel, getVideo, listVideosForChannel, retryVideo, rewriteVideoArticle,
+    deleteChannel, getVideo, listVideosForChannel, retryVideo,
+    listArticleVersions, requestArticleVersion,
     deleteVideo, libraryCounts, listLibraryVideos, listYoutubeAuthBlockedVideos,
     getTranscriptSegments, setVideoRead, setVideoReadingProgress,
 } from '../db/index.mjs';
@@ -44,6 +45,14 @@ export function broadcastSSE(event, data) {
     const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of sseClients) {
         try { res.write(msg); } catch { sseClients.delete(res); }
+    }
+}
+
+function versionStates(json) {
+    try {
+        return Object.fromEntries(Object.entries(JSON.parse(json || '{}')).map(([language, state]) => [language, { state }]));
+    } catch {
+        return {};
     }
 }
 
@@ -117,7 +126,11 @@ export function startServer(port) {
         });
         res.json({
             ...page,
-            videos: page.videos.map(video => enrichVideoStatus(video)),
+            videos: page.videos.map(video => ({
+                ...enrichVideoStatus(video),
+                version_states: undefined,
+                versions: versionStates(video.version_states),
+            })),
             counts: libraryCounts(),
         });
     });
@@ -213,12 +226,16 @@ export function startServer(port) {
         const v = getVideo(req.params.id);
         if (!v) return res.status(404).json({ error: 'not found' });
         const includeSegments = req.query.segments === '1';
+        const versions = Object.fromEntries(listArticleVersions(v.id).map(({ video_id, language, ...rest }) => [language, rest]));
         res.json({
-            video: publicVideo(v, {
-                includeTranscript: req.query.transcript === '1',
-                includeSegments,
-                segments: includeSegments ? getTranscriptSegments(v.id) : [],
-            }),
+            video: {
+                ...publicVideo(v, {
+                    includeTranscript: req.query.transcript === '1',
+                    includeSegments,
+                    segments: includeSegments ? getTranscriptSegments(v.id) : [],
+                }),
+                versions,
+            },
         });
     });
 
@@ -255,24 +272,27 @@ export function startServer(port) {
         res.json({ ok: true });
     });
 
-    app.post('/api/videos/:id/rewrite', (req, res) => {
+    // Asks for the article in another language. It is written from the stored
+    // transcript once the video is done, so it can be asked for while processing.
+    app.post('/api/videos/:id/versions', (req, res) => {
         const v = getVideo(req.params.id);
         if (!v) return res.status(404).json({ error: 'not found' });
         const language = req.body?.language;
-        if (!Object.hasOwn(ARTICLE_LANGUAGES, language)) {
+        if (typeof language !== 'string' || !Object.hasOwn(ARTICLE_LANGUAGES, language)) {
             return res.status(400).json({ error: `language must be one of: ${Object.keys(ARTICLE_LANGUAGES).join(', ')}` });
         }
-        if (ACTIVE_VIDEO_STATES.has(v.state)) return res.status(409).json({ error: 'video is still processing' });
-        if (!v.transcript) return res.status(409).json({ error: 'no transcript to rewrite yet' });
-        rewriteVideoArticle(req.params.id, language);
+        if (language === v.article_language) return res.status(409).json({ error: 'the article is already in that language' });
+        // Versions queued earlier wait for a failed video and run once a retry finishes it.
+        if (v.state === 'error') return res.status(409).json({ error: 'this video failed; retry it first' });
+        const version = requestArticleVersion(v.id, language);
         broadcastSSE(SSE_EVENTS.VIDEO_STATE, {
-            id: req.params.id,
-            state: 'queued',
+            id: v.id,
             channelId: v.channel_id,
             title: v.title,
-            source_type: v.source_type,
+            version: language,
+            state: version.state,
         });
-        res.json({ ok: true, language });
+        res.json({ ok: true, language, state: version.state });
     });
 
     app.delete('/api/videos/:id', (req, res) => {

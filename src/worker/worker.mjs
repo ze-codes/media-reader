@@ -4,8 +4,9 @@
 // rolled back to `queued`.
 
 import {
-    setVideoState, setVideoError, getChannel,
+    setVideoState, setVideoError, getChannel, getVideo,
     getDb, getTranscriptSegments, replaceVideoTranscript,
+    nextQueuedArticleVersion, setArticleVersion, deleteArticleVersion,
 } from '../db/index.mjs';
 import {
     fetchCaptions, fetchAudio, clearVideoCache, detectVideoSource,
@@ -17,6 +18,7 @@ import { log } from '../shared/log.mjs';
 import { isUsableTranscript } from '../domain/transcript-quality.mjs';
 import { isLocalUpload } from '../uploads/index.mjs';
 import { SSE_EVENTS, TRANSCRIPT_SOURCES, VIDEO_STATES } from '../domain/constants.mjs';
+import { guessLanguage } from '../domain/language.mjs';
 
 let broadcast = () => {};
 export function setBroadcaster(fn) { broadcast = fn; }
@@ -27,6 +29,7 @@ export function resetInFlight() {
         "UPDATE videos SET state = 'queued', updated_at = datetime('now') WHERE state IN ('fetching','transcribing','writing')"
     ).run().changes;
     if (changed > 0) log('info', 'worker', `reset ${changed} in-flight videos to queued`);
+    getDb().prepare("UPDATE article_versions SET state = 'queued' WHERE state = 'writing'").run();
 }
 
 function emitVideoState(video, state, extra = {}) {
@@ -122,19 +125,24 @@ async function getUsableTranscript(video) {
     return transcript;
 }
 
+// The first article is written in the language spoken in the video; other
+// languages are versions written later on request (writeArticleVersion).
 async function writeArticle(video, channelTitle, transcript) {
+    const language = guessLanguage(transcript.text);
     setVideoState(video.id, VIDEO_STATES.WRITING, {
         error: null,
+        article_language: language,
     });
     emitVideoState(video, VIDEO_STATES.WRITING, {
         transcript_source: transcript.source,
+        article_language: language,
     });
 
     return transformTranscript({
         title: video.title,
         channel: channelTitle,
         transcript: transcript.text,
-        language: video.article_language || null,
+        language,
     });
 }
 
@@ -165,6 +173,36 @@ function completeVideo(video, transcript, result) {
         source_type: video.source_type,
     });
     log('info', 'worker', `done ${video.id} — $${(cost?.costUsd || 0).toFixed(4)} ${cost?.estimated ? 'est. ' : ''}(${transcript.source}, ${cost?.model || 'unknown model'})`, { videoId: video.id });
+}
+
+async function writeArticleVersion(job) {
+    const video = getVideo(job.video_id);
+    if (!video) return; // deleted since it was picked; the row went with it
+    const event = { id: video.id, channelId: video.channel_id, title: video.title, version: job.language };
+    if (job.language === video.article_language) {
+        // Queued before the video's own language was known, and it turned out to be this one.
+        deleteArticleVersion(video.id, job.language);
+        broadcast(SSE_EVENTS.VIDEO_STATE, { ...event, state: 'none' });
+        return;
+    }
+    setArticleVersion(video.id, job.language, { state: 'writing', error: null });
+    broadcast(SSE_EVENTS.VIDEO_STATE, { ...event, state: 'writing' });
+    try {
+        const { tldr, article } = await transformTranscript({
+            title: video.title,
+            channel: getChannel(video.channel_id)?.title || video.channel_id,
+            transcript: video.transcript,
+            language: job.language,
+        });
+        setArticleVersion(video.id, job.language, { state: 'done', tldr, article, error: null });
+        broadcast(SSE_EVENTS.VIDEO_DONE, event);
+        log('info', 'worker', `wrote the ${job.language} version of ${video.id}`, { videoId: video.id });
+    } catch (err) {
+        const msg = err?.message || String(err);
+        setArticleVersion(video.id, job.language, { state: 'error', error: msg.slice(0, 2000) });
+        broadcast(SSE_EVENTS.VIDEO_ERROR, { ...event, error: msg });
+        log('error', 'worker', `failed the ${job.language} version of ${video.id}: ${msg}`, { videoId: video.id });
+    }
 }
 
 async function processOne(video) {
@@ -208,6 +246,12 @@ export async function workerLoop() {
     log('info', 'worker', 'worker loop started');
 
     while (!stopRequested) {
+        // Versions first: someone asked for one and is usually waiting on it.
+        const version = nextQueuedArticleVersion();
+        if (version) {
+            await writeArticleVersion(version);
+            continue;
+        }
         const video = nextQueuedVideo();
         if (!video) {
             await wait(2000);
@@ -231,9 +275,7 @@ export async function workerLoop() {
                 await delayAfterYoutubeJob(video);
                 continue;
             }
-            // A failed rewrite must not hide the article the video already has.
-            if (video.article) setVideoState(video.id, VIDEO_STATES.DONE, { error: `Rewrite failed: ${msg}` });
-            else setVideoError(video.id, msg);
+            setVideoError(video.id, msg);
             broadcast(SSE_EVENTS.VIDEO_ERROR, {
                 id: video.id,
                 channelId: video.channel_id,

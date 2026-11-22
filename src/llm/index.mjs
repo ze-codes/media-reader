@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { generateText } from './providers/index.mjs';
+import { guessLanguage } from '../domain/language.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = readFileSync(join(__dirname, 'prompts', 'article.md'), 'utf8');
@@ -17,14 +18,6 @@ export const ARTICLE_LANGUAGES = Object.freeze({
     zh: 'Write in Simplified Chinese (简体中文) regardless of the transcript language.',
 });
 const SAME_LANGUAGE_INSTRUCTION = 'Write in the main language spoken in the transcript. If it mixes languages, use the dominant one.';
-
-// Chinese characters against Latin words; a Chinese character is roughly one word.
-export function guessTranscriptLanguage(text) {
-    const value = String(text || '');
-    const cjk = (value.match(/[\u4e00-\u9fff]/g) || []).length;
-    const latinWords = (value.match(/[A-Za-z]+/g) || []).length;
-    return cjk > latinWords ? 'zh' : 'en';
-}
 
 function languageInstruction(language) {
     return ARTICLE_LANGUAGES[language] || SAME_LANGUAGE_INSTRUCTION;
@@ -265,8 +258,7 @@ export async function transformTranscript({ title, channel, transcript, language
     const transcriptWords = wordCount(transcript);
     if (articleTransformStrategy(transcriptWords) === 'sectioned') {
         // Each section sees only its slice, so pick the language once for all of them.
-        // shortcut: only tells Chinese from English, the two languages the reader offers; add a detector for others.
-        return transformVeryLongTranscript({ title, channel, transcript, language: language || guessTranscriptLanguage(transcript), llm });
+        return transformVeryLongTranscript({ title, channel, transcript, language: language || guessLanguage(transcript), llm });
     }
 
     const userPrompt = [

@@ -2,6 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { transcriptSourceLabel, videoStatusMessage } from '../public/status-messages.mjs';
 
 describe('video status messages', () => {
+    test('reports finished and failed language versions, and stays quiet while they are written', () => {
+        expect(videoStatusMessage('video:done', { title: 'Talk', version: 'zh' }))
+            .toEqual({ kind: 'success', message: '中文 version ready: Talk' });
+        expect(videoStatusMessage('video:error', { title: 'Talk', version: 'en', error: 'timed out' }))
+            .toEqual({ kind: 'error', message: "Couldn't write the English version of Talk: timed out" });
+        expect(videoStatusMessage('video:state', { title: 'Talk', version: 'zh', state: 'writing' })).toBeNull();
+    });
+
     test('labels transcript sources for users', () => {
         expect(transcriptSourceLabel('captions')).toBe('YouTube captions');
         expect(transcriptSourceLabel('transcriptapi')).toBe('TranscriptAPI');

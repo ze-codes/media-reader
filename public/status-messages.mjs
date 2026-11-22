@@ -4,6 +4,9 @@ const SOURCE_LABELS = {
     whisper: 'Whisper transcription',
 };
 
+// Same labels as src/domain/language.mjs; the browser cannot import from src/.
+export const LANGUAGE_LABELS = Object.freeze({ en: 'English', zh: '中文' });
+
 export function transcriptSourceLabel(source) {
     return SOURCE_LABELS[source] || source || '';
 }
@@ -20,6 +23,15 @@ export function videoStatusMessage(eventType, data = {}) {
     const label = videoLabel(data);
     const source = transcriptSourceLabel(data.transcript_source);
     const upload = isUpload(data);
+
+    if (data.version) {
+        const language = LANGUAGE_LABELS[data.version] || data.version;
+        if (eventType === 'video:done') return { kind: 'success', message: `${language} version ready: ${label}` };
+        if (eventType === 'video:error') {
+            return { kind: 'error', message: `Couldn't write the ${language} version of ${label}: ${data.error || 'unknown error'}` };
+        }
+        return null;
+    }
 
     if (eventType === 'video:error') {
         const error = data.error || 'unknown error';

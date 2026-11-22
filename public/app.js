@@ -1,4 +1,4 @@
-import { transcriptSourceLabel, videoStatusMessage } from './status-messages.mjs';
+import { LANGUAGE_LABELS, transcriptSourceLabel, videoStatusMessage } from './status-messages.mjs';
 import {
     api,
     deleteChannelRequest,
@@ -8,7 +8,7 @@ import {
     fetchLibraryRequest,
     reloadYoutubeAccessRequest,
     retryVideoRequest,
-    rewriteArticleRequest,
+    requestArticleVersionRequest,
     setReadingProgressRequest,
     setVideoReadRequest,
     submitChannel,
@@ -253,23 +253,163 @@ async function fetchFullVideo(videoId) {
     return fetchFullVideoRequest(videoId);
 }
 
-// Judged from the text itself: the stored choice can be stale after a failed rewrite.
-function articleLanguage(video) {
-    const text = String(video.article || '');
-    const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-    const latinWords = (text.match(/[A-Za-z]+/g) || []).length;
-    return cjk > latinWords ? 'zh' : 'en';
+// ── Article languages ──────────────────────────────────
+// The video's own article is in `article_language`; other languages are
+// versions in `versions[language].state`: queued | writing | done | error.
+const LANGUAGE_ICONS = {
+    none: '<svg class="lang-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
+    writing: '<svg class="lang-icon lang-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke-opacity="0.25"/><path d="M8 2a6 6 0 0 1 6 6"/></svg>',
+    error: '<svg class="lang-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.6v4.2M8 11.2v.2"/></svg>',
+};
+LANGUAGE_ICONS.queued = LANGUAGE_ICONS.writing;
+const LANGUAGE_TITLES = {
+    none: label => `Write the ${label} version`,
+    queued: label => `The ${label} version is queued`,
+    writing: label => `Writing the ${label} version`,
+    error: label => `Writing the ${label} version failed`,
+    done: label => `Read in ${label}`,
+};
+
+function mainLanguage(video) {
+    return video.article_language || 'en';
 }
 
-async function rewriteArticle(videoId, language) {
-    const result = await rewriteArticleRequest(videoId, language);
+function versionState(video, language) {
+    if (language === mainLanguage(video)) return video.state === 'done' ? 'done' : 'writing';
+    return video.versions?.[language]?.state || 'none';
+}
+
+// The language last read for this video, if that version still exists.
+function readerLanguage(video) {
+    let saved = null;
+    try { saved = localStorage.getItem(`media-reader:language:${video.id}`); } catch {}
+    return saved && video.versions?.[saved] ? saved : mainLanguage(video);
+}
+
+function rememberLanguage(videoId, language) {
+    try { localStorage.setItem(`media-reader:language:${videoId}`, language); } catch {}
+}
+
+// The TL;DR and article to show in `language`, or null while it is not written.
+function shownArticle(video, language) {
+    if (language === mainLanguage(video)) return { tldr: video.tldr, article: video.article };
+    const version = video.versions?.[language];
+    return version?.state === 'done' ? { tldr: version.tldr, article: version.article } : null;
+}
+
+function renderLanguageSwitch(video, selected = null) {
+    if (!video.article_language && video.state !== 'done') {
+        return `<span class="lang-label">${LANGUAGE_ICONS.writing}Language: detecting</span>`;
+    }
+    const main = mainLanguage(video);
+    const order = [main, ...Object.keys(LANGUAGE_LABELS).filter(language => language !== main)];
+    const buttons = order.map(language => {
+        const status = versionState(video, language);
+        const label = LANGUAGE_LABELS[language];
+        const isSelected = language === selected;
+        const locked = language === main && status !== 'done';
+        return `<button class="lang-seg state-${status}${isSelected ? ' is-selected' : ''}" data-id="${escapeHtml(video.id)}" data-language="${language}" type="button" aria-pressed="${isSelected}" title="${escapeHtml(LANGUAGE_TITLES[status](label))}" ${locked ? 'disabled' : ''}>${LANGUAGE_ICONS[status] || ''}${label}</button>`;
+    }).join('');
+    return `<span class="lang-switch" role="group" aria-label="Article language">${buttons}</span>`;
+}
+
+function findLoadedVideo(videoId) {
+    return fullCache.get(videoId) || allVideos().find(video => video.id === videoId);
+}
+
+async function requestVersion(videoId, language) {
+    const result = await requestArticleVersionRequest(videoId, language);
     if (!result.ok) {
-        toast(`Rewrite failed: ${result.payload.error || result.status}`, 'error');
+        toast(`Could not write the ${LANGUAGE_LABELS[language]} version: ${result.payload.error || result.status}`, 'error');
+        return false;
+    }
+    state.trackedVideoIds.add(videoId); // so its ready or failed toast shows
+    // Show it queued right away; the server's events refresh it from here.
+    for (const video of [fullCache.get(videoId), allVideos().find(item => item.id === videoId)]) {
+        if (video) video.versions = { ...video.versions, [language]: { state: 'queued', updated_at: null } };
+    }
+    return true;
+}
+
+// A tap on a language: write it if it is missing, then read it. In the library
+// a missing language is only queued, so the list stays where it is.
+async function pickLanguage(videoId, language, { inReader = false } = {}) {
+    const video = findLoadedVideo(videoId);
+    if (!video) return;
+    const missing = versionState(video, language) === 'none';
+    if (missing && !(await requestVersion(videoId, language))) return;
+    if (!inReader && (missing || video.state !== 'done')) {
+        renderMain();
         return;
     }
-    toast(language === 'zh' ? 'Rewriting the article in Chinese...' : 'Rewriting the article in English...');
-    backToLibrary();
-    await Promise.all([fetchChannels(), fetchLibrary()]);
+    rememberLanguage(videoId, language);
+    if (!inReader) {
+        openReader(videoId);
+        return;
+    }
+    if (state.readerVideoId !== videoId) return; // moved on while the request was out
+    stopReadingProgressTracking({ flush: true });
+    renderReader(videoId);
+}
+
+async function retryVersion(videoId, language) {
+    if (await requestVersion(videoId, language) && state.readerVideoId === videoId) renderReader(videoId);
+}
+
+function formatClock(sqliteTime) {
+    const date = new Date(`${String(sqliteTime || '').replace(' ', 'T')}Z`);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Shown in place of the article while a version is queued, being written, or failed.
+function renderVersionPanel(full, language) {
+    const version = full.versions?.[language] || {};
+    const label = LANGUAGE_LABELS[language];
+    const main = mainLanguage(full);
+    const mainLabel = LANGUAGE_LABELS[main];
+    const failed = version.state === 'error';
+    const back = `<button class="textbtn lang-pick-btn" data-id="${escapeHtml(full.id)}" data-language="${main}" type="button">${failed ? `Back to ${mainLabel}` : `Read the ${mainLabel} version meanwhile`}</button>`;
+    if (failed) {
+        return `
+          <div id="article-panel" role="tabpanel" aria-labelledby="article-tab">
+            <section class="version-panel is-error" role="alert">
+              <h2>${LANGUAGE_ICONS.error}Couldn't write the ${label} version</h2>
+              <p class="error-msg">${escapeHtml(version.error || 'unknown error')}</p>
+              <p>The ${mainLabel} version is untouched and the transcript is kept, so trying again starts straight at the writing step.</p>
+              <div class="version-actions">
+                <button class="textbtn version-retry-btn" data-id="${escapeHtml(full.id)}" data-language="${language}" type="button">Try again</button>
+                ${back}
+              </div>
+            </section>
+          </div>`;
+    }
+    const since = version.state === 'writing' ? formatClock(version.updated_at) : '';
+    const status = version.state === 'writing'
+        ? `Writing${since ? ` since ${since}` : ''}.`
+        : 'Queued; it starts when the worker is free.';
+    return `
+      <div id="article-panel" role="tabpanel" aria-labelledby="article-tab">
+        <section class="version-panel" aria-live="polite">
+          <h2>${LANGUAGE_ICONS.writing}Writing the ${label} version</h2>
+          <p>From the stored transcript, so nothing is downloaded or transcribed again. Usually about a minute. It appears here by itself; if you leave, a toast says when it is ready.</p>
+          <p class="version-status">${escapeHtml(status)}</p>
+          <div class="version-actions">${back}</div>
+        </section>
+        <div class="skeleton-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      </div>`;
+}
+
+// A version finished or failed while its video is open: redraw the reader in place.
+// Events can overlap, so only the newest fetch may redraw.
+let readerRefreshSeq = 0;
+async function refreshOpenReader(videoId) {
+    const seq = ++readerRefreshSeq;
+    const progress = readerProgressSession?.videoId === videoId ? readingProgressForWindow() : null;
+    const full = await fetchFullVideo(videoId);
+    if (!full || seq !== readerRefreshSeq || state.readerVideoId !== videoId) return;
+    if (progress != null) full.reading_progress = progress;
+    fullCache.set(videoId, full);
+    renderReader(videoId);
 }
 
 async function retryVideo(videoId) {
@@ -556,6 +696,7 @@ function renderDoneCard(video) {
             <h3 class="card-title"><button class="card-title-button open-reader-btn" data-id="${video.id}" type="button">${escapeHtml(video.title || video.id)}</button></h3>
           </div>
           <div class="card-tldr">${preview ? renderMarkdown(preview) : '<p>Article ready. Open it to read the full generated version.</p>'}</div>
+          <div class="card-lang">${renderLanguageSwitch(video, readerLanguage(video))}</div>
           <div class="card-meta">
             <span class="chip"><span class="chip-glyph"></span>${escapeHtml(source)}</span>
             ${renderPublishedMeta(video)}
@@ -578,6 +719,9 @@ function renderDoneCard(video) {
 
 function renderProcessingCard(video) {
     const step = PROCESSING_STEPS[video.state] || PROCESSING_STEPS.queued;
+    const stepLabel = video.state === 'writing' && video.article_language
+        ? `Writing the ${LANGUAGE_LABELS[video.article_language] || ''} article`
+        : step.label;
     const blocked = renderBlockedNotice(video);
     return `
       <article class="card" data-id="${video.id}">
@@ -591,10 +735,11 @@ function renderProcessingCard(video) {
               <div class="video-process-bar" style="width:${step.percent}%"></div>
             </div>
             <div class="video-process-text">
-              <span>${escapeHtml(step.label)}</span>
+              <span>${escapeHtml(stepLabel)}</span>
               <span>${step.percent}%</span>
             </div>
           </div>
+          <div class="card-lang">${renderLanguageSwitch(video)}</div>
           ${blocked}
           <div class="card-meta">
             <span class="meta-bit work">${escapeHtml(step.label)}</span>
@@ -672,6 +817,9 @@ function bindFeedEvents() {
     });
     ui.main.querySelectorAll('.copy-content-btn').forEach(el => {
         el.addEventListener('click', () => copyGeneratedText(el.dataset.id, el.dataset.copyKind));
+    });
+    ui.main.querySelectorAll('.lang-seg').forEach(el => {
+        el.addEventListener('click', () => pickLanguage(el.dataset.id, el.dataset.language));
     });
 }
 
@@ -778,35 +926,44 @@ async function renderReader(videoId) {
     const initialProgress = clampReadingProgress(full.reading_progress);
     const initialProgressPercent = Math.round(initialProgress * 100);
     const isArticle = readerTab === 'article';
-    const readerContent = isArticle ? renderArticleBody(full) : renderTranscriptBody(full);
-    const rewriteTo = articleLanguage(full) === 'zh' ? 'en' : 'zh';
+    const language = readerLanguage(full);
+    const shown = isArticle ? shownArticle(full, language) : null;
+    const readerContent = !isArticle
+        ? renderTranscriptBody(full)
+        : shown ? renderArticleBody({ ...full, ...shown }) : renderVersionPanel(full, language);
+    const copyDisabled = shown ? '' : 'disabled';
     const copyActions = isArticle
         ? `
-            <button class="textbtn rewrite-language-btn" data-id="${full.id}" data-language="${rewriteTo}" type="button" title="Rewrite the article in ${rewriteTo === 'zh' ? 'Chinese' : 'English'} from the same transcript">${rewriteTo === 'zh' ? '中文' : 'English'}</button>
-            <button class="textbtn copy-content-btn" data-id="${full.id}" data-copy-kind="tldr" type="button" aria-label="Copy TL;DR"><span class="hide-sm">Copy </span>TL;DR</button>
-            <button class="textbtn copy-content-btn" data-id="${full.id}" data-copy-kind="article" type="button" aria-label="Copy article"><span class="hide-sm">Copy </span>Article</button>`
+            <button class="textbtn copy-content-btn" data-id="${full.id}" data-copy-kind="tldr" type="button" aria-label="Copy TL;DR" ${copyDisabled}><span class="hide-sm">Copy </span>TL;DR</button>
+            <button class="textbtn copy-content-btn" data-id="${full.id}" data-copy-kind="article" type="button" aria-label="Copy article" ${copyDisabled}><span class="hide-sm">Copy </span>Article</button>`
         : '<button class="textbtn copy-content-btn" data-id="' + escapeHtml(full.id) + '" data-copy-kind="transcript" type="button">Copy <span class="hide-sm">Transcript</span></button>';
+    const languageControl = isArticle
+        ? renderLanguageSwitch(full, language)
+        : `<span class="lang-label">Spoken in ${LANGUAGE_LABELS[mainLanguage(full)]}</span>`;
 
     ui.main.innerHTML = `
       <article class="reader">
         <div class="reader-bar">
           <div class="reader-bar-left">
             <button class="textbtn back-library-btn" type="button">‹ Library</button>
-            ${isArticle ? `<span class="reader-progress-label">${initialProgressPercent}% read</span>` : ''}
+            ${shown ? `<span class="reader-progress-label">${initialProgressPercent}% read</span>` : ''}
           </div>
-          <div class="reader-tabs" role="tablist" aria-label="Reader view">
-            <button class="reader-tab-btn" id="article-tab" role="tab" aria-selected="${isArticle}" aria-controls="article-panel" tabindex="${isArticle ? '0' : '-1'}" data-reader-tab="article" type="button">Article</button>
-            <button class="reader-tab-btn" id="transcript-tab" role="tab" aria-selected="${!isArticle}" aria-controls="transcript-panel" tabindex="${isArticle ? '-1' : '0'}" data-reader-tab="transcript" type="button">Transcript</button>
+          <div class="reader-center">
+            <div class="reader-tabs" role="tablist" aria-label="Reader view">
+              <button class="reader-tab-btn" id="article-tab" role="tab" aria-selected="${isArticle}" aria-controls="article-panel" tabindex="${isArticle ? '0' : '-1'}" data-reader-tab="article" type="button">Article</button>
+              <button class="reader-tab-btn" id="transcript-tab" role="tab" aria-selected="${!isArticle}" aria-controls="transcript-panel" tabindex="${isArticle ? '-1' : '0'}" data-reader-tab="transcript" type="button">Transcript</button>
+            </div>
+            ${languageControl}
           </div>
           <div class="reader-bar-right">
             ${copyActions}
             <button class="iconbtn danger delete-video-btn" data-id="${full.id}" title="Delete" aria-label="Delete article" type="button">×</button>
           </div>
-          ${isArticle ? `<div class="reader-progress-track" role="progressbar" aria-label="Article reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${initialProgressPercent}">
+          ${shown ? `<div class="reader-progress-track" role="progressbar" aria-label="Article reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${initialProgressPercent}">
             <div class="reader-progress-fill" style="width: ${initialProgress * 100}%"></div>
           </div>` : ''}
         </div>
-        ${isArticle ? `<div class="reader-progress-track reader-progress-track-fixed" role="progressbar" aria-label="Article reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${initialProgressPercent}" aria-hidden="true">
+        ${shown ? `<div class="reader-progress-track reader-progress-track-fixed" role="progressbar" aria-label="Article reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${initialProgressPercent}" aria-hidden="true">
           <div class="reader-progress-fill" style="width: ${initialProgress * 100}%"></div>
         </div>` : ''}
         <div class="reader-col">
@@ -835,20 +992,23 @@ async function renderReader(videoId) {
         });
     });
     ui.main.querySelectorAll('.copy-content-btn').forEach(el => {
-        el.addEventListener('click', () => copyGeneratedText(el.dataset.id, el.dataset.copyKind));
+        el.addEventListener('click', () => copyGeneratedText(el.dataset.id, el.dataset.copyKind, { fromReader: true }));
     });
     ui.main.querySelectorAll('.delete-video-btn').forEach(el => {
         el.addEventListener('click', () => deleteTranscript(el.dataset.id));
     });
-    ui.main.querySelectorAll('.rewrite-language-btn').forEach(el => {
-        el.addEventListener('click', () => rewriteArticle(el.dataset.id, el.dataset.language));
+    ui.main.querySelectorAll('.lang-seg, .lang-pick-btn').forEach(el => {
+        el.addEventListener('click', () => pickLanguage(el.dataset.id, el.dataset.language, { inReader: true }));
+    });
+    ui.main.querySelectorAll('.version-retry-btn').forEach(el => {
+        el.addEventListener('click', () => retryVersion(el.dataset.id, el.dataset.language));
     });
     ui.main.querySelectorAll('.nav-reader-btn').forEach(el => {
         el.addEventListener('click', () => {
             if (el.dataset.id) openReader(el.dataset.id, readerTab);
         });
     });
-    if (isArticle) {
+    if (shown) {
         startReadingProgressTracking(full);
     } else {
         window.scrollTo(0, 0);
@@ -1001,15 +1161,16 @@ function firstBullets(markdown, count) {
     return lines.slice(0, count).join('\n');
 }
 
-async function copyGeneratedText(videoId, kind) {
+async function copyGeneratedText(videoId, kind, { fromReader = false } = {}) {
     let fullData = fullCache.get(videoId);
     if (!fullData) {
         fullData = await fetchFullVideo(videoId);
         if (fullData) fullCache.set(videoId, fullData);
     }
+    const shown = fullData ? shownArticle(fullData, fromReader ? readerLanguage(fullData) : mainLanguage(fullData)) : null;
     const text = kind === 'article'
-        ? `# ${fullData?.title || ''}\n\n## TL;DR\n${fullData?.tldr || ''}\n\n${fullData?.article || ''}`
-        : kind === 'transcript' ? fullData?.transcript : fullData?.tldr;
+        ? shown && `# ${fullData.title || ''}\n\n## TL;DR\n${shown.tldr || ''}\n\n${shown.article || ''}`
+        : kind === 'transcript' ? fullData?.transcript : shown?.tldr;
     const label = kind === 'article' ? 'Article' : kind === 'transcript' ? 'Transcript' : 'TL;DR';
     if (!text) {
         toast(`${label} is not loaded yet`, 'error');
@@ -1081,6 +1242,7 @@ function onVideoUpdate(e) {
         const data = JSON.parse(e.data);
         toastVideoStatus(e.type, data);
         if (data.id) fullCache.delete(data.id);
+        if (data.version && data.id === state.readerVideoId) refreshOpenReader(data.id);
     } catch {}
 
     if (videoRefreshTimer) return;

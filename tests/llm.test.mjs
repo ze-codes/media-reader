@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { articleTransformStrategy, guessTranscriptLanguage, splitTranscriptByWords, transformTranscript } from '../src/llm/index.mjs';
+import { articleTransformStrategy, splitTranscriptByWords, transformTranscript } from '../src/llm/index.mjs';
+import { guessLanguage } from '../src/domain/language.mjs';
 
 describe('llm transcript transforms', () => {
     test('writes in the transcript language by default and in the requested language on every prompt', async () => {
@@ -27,10 +28,10 @@ describe('llm transcript transforms', () => {
     });
 
     test('guesses Chinese against English by characters per word, ignoring code and markup', () => {
-        expect(guessTranscriptLanguage('今天我们谈论一下男女双方彩礼的问题')).toBe('zh');
-        expect(guessTranscriptLanguage('## Notes\n- We talk about the bride price today.')).toBe('en');
+        expect(guessLanguage('今天我们谈论一下男女双方彩礼的问题')).toBe('zh');
+        expect(guessLanguage('## Notes\n- We talk about the bride price today.')).toBe('en');
         const chineseWithCode = '这个函数很重要，我们一起看一下。'.repeat(20) + '\n```js\nconst x = foo(bar, baz) + 1;\n```';
-        expect(guessTranscriptLanguage(chineseWithCode)).toBe('zh');
+        expect(guessLanguage(chineseWithCode)).toBe('zh');
     });
 
     test('converts normalized provider usage to article cost without inventing prices', async () => {

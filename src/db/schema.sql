@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
 CREATE INDEX IF NOT EXISTS idx_transcript_segments_video
     ON transcript_segments(video_id, sequence);
 
+-- Extra languages of a video's article. The video's own language (videos.article_language)
+-- lives on the videos row; each other language is written later, on request, from the
+-- stored transcript.
+CREATE TABLE IF NOT EXISTS article_versions (
+    video_id    TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    language    TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'queued',  -- queued | writing | done | error
+    tldr        TEXT,
+    article     TEXT,
+    error       TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (video_id, language)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          TEXT NOT NULL DEFAULT (datetime('now')),

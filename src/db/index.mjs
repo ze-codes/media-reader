@@ -4,6 +4,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { dbPath } from '../shared/paths.mjs';
 import { normalizeTranscriptSegments } from '../transcripts/segments.mjs';
+import { guessLanguage } from '../domain/language.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -49,8 +50,21 @@ export function getDb() {
         const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
         db.exec(schema);
         ensureVideoColumns(db);
+        backfillArticleLanguages(db);
     }
     return db;
+}
+
+// An article's language comes from its own text. This fills it in for articles
+// written before languages were tracked, and corrects ones a failed rewrite (#3)
+// labelled with the language it was asked for rather than the one it is in.
+export function backfillArticleLanguages(database) {
+    const rows = database.prepare('SELECT id, article, article_language FROM videos WHERE article IS NOT NULL').all();
+    const update = database.prepare('UPDATE videos SET article_language = ? WHERE id = ?');
+    for (const row of rows) {
+        const language = guessLanguage(row.article);
+        if (language !== row.article_language) update.run(language, row.id);
+    }
 }
 
 // ─── Channels ───────────────────────────────────────────────
@@ -264,8 +278,10 @@ export function listLibraryVideos({
                v.transcript_source, v.state, v.error, v.cost_usd, v.llm_model,
                v.transcript_tokens_est, v.input_tokens_est, v.output_tokens_est,
                v.total_tokens_est, v.cost_usd_est, v.cost_estimate_method,
-               v.updated_at, v.read_at, v.reading_progress, v.tldr,
+               v.updated_at, v.read_at, v.reading_progress, v.tldr, v.article_language,
                (v.article IS NOT NULL) AS has_article,
+               (SELECT json_group_object(av.language, av.state) FROM article_versions av
+                WHERE av.video_id = v.id) AS version_states,
                c.title AS channel_title, c.handle AS channel_handle
         FROM videos v
         JOIN channels c ON c.id = v.channel_id
@@ -343,12 +359,46 @@ export function setVideoError(id, error) {
     ).run(String(error).slice(0, 2000), id);
 }
 
-// Re-queue a finished video to rewrite its article in `language`; the stored
-// transcript is reused, so only the article step runs again.
-export function rewriteVideoArticle(id, language) {
-    getDb().prepare(
-        "UPDATE videos SET article_language = ?, state = 'queued', error = NULL, updated_at = datetime('now') WHERE id = ?"
-    ).run(language, id);
+// ─── Article versions (other languages) ─────────────────────
+
+// Queues `language` for a video. A failed version is queued again; a queued,
+// writing or finished one is left alone. Returns the row as it now stands.
+export function requestArticleVersion(videoId, language) {
+    const db = getDb();
+    db.prepare(`
+        INSERT INTO article_versions (video_id, language) VALUES (?, ?)
+        ON CONFLICT(video_id, language) DO UPDATE SET
+            state = 'queued', error = NULL, updated_at = datetime('now')
+        WHERE article_versions.state = 'error'
+    `).run(videoId, language);
+    return db.prepare('SELECT * FROM article_versions WHERE video_id = ? AND language = ?').get(videoId, language);
+}
+
+export function listArticleVersions(videoId) {
+    return getDb().prepare('SELECT * FROM article_versions WHERE video_id = ? ORDER BY language').all(videoId);
+}
+
+// Oldest queued version whose video is finished, so its transcript and own language are known.
+export function nextQueuedArticleVersion() {
+    return getDb().prepare(`
+        SELECT av.* FROM article_versions av
+        JOIN videos v ON v.id = av.video_id
+        WHERE av.state = 'queued' AND v.state = 'done'
+        ORDER BY av.updated_at ASC LIMIT 1
+    `).get() || null;
+}
+
+export function setArticleVersion(videoId, language, fields) {
+    const keys = Object.keys(fields);
+    getDb().prepare(`
+        UPDATE article_versions
+        SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = datetime('now')
+        WHERE video_id = ? AND language = ?
+    `).run(...keys.map(key => fields[key]), videoId, language);
+}
+
+export function deleteArticleVersion(videoId, language) {
+    getDb().prepare('DELETE FROM article_versions WHERE video_id = ? AND language = ?').run(videoId, language);
 }
 
 export function retryVideo(id) {
