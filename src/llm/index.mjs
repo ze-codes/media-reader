@@ -9,7 +9,22 @@ const SYSTEM_PROMPT = readFileSync(join(__dirname, 'prompts', 'article.md'), 'ut
 const TIMEOUT_MS = 10 * 60 * 1000; // long transcripts can take a few minutes
 const SECTIONED_TRANSCRIPT_WORDS = 6000;
 const SECTION_CHUNK_WORDS = 3000;
-export const ARTICLE_PROMPT_VERSION = 'edited-transcript-v5';
+export const ARTICLE_PROMPT_VERSION = 'edited-transcript-v6';
+
+// null = write in the transcript's own language; otherwise a language the reader asked for.
+export const ARTICLE_LANGUAGES = Object.freeze({
+    en: 'Write in English regardless of the transcript language.',
+    zh: 'Write in Simplified Chinese (简体中文) regardless of the transcript language.',
+});
+const SAME_LANGUAGE_INSTRUCTION = 'Write in the main language spoken in the transcript. If it mixes languages, use the dominant one.';
+
+function languageInstruction(language) {
+    return ARTICLE_LANGUAGES[language] || SAME_LANGUAGE_INSTRUCTION;
+}
+
+function articleSystemPrompt(language) {
+    return SYSTEM_PROMPT.replace('{{LANGUAGE_INSTRUCTION}}', languageInstruction(language));
+}
 const TOKEN_ESTIMATE_METHOD = 'estimated: ceil(characters / 4)';
 
 const TLDR_PROMPT = [
@@ -121,9 +136,9 @@ async function invokeArticleLlm(llm, systemPrompt, userPrompt) {
     };
 }
 
-function sectionSystemPrompt() {
+function sectionSystemPrompt(language) {
     return [
-        SYSTEM_PROMPT,
+        articleSystemPrompt(language),
         '',
         'Additional instruction for this request: the user will provide only one ordered slice of a larger transcript.',
         'Write the article content for this slice only. Preserve the slice order and details.',
@@ -193,11 +208,11 @@ async function generateSectionArticle({ sectionPrompt, userPrompt, llm }) {
     throw lastError;
 }
 
-async function transformVeryLongTranscript({ title, channel, transcript, llm }) {
+async function transformVeryLongTranscript({ title, channel, transcript, language, llm }) {
     const chunks = splitTranscriptByWords(transcript, SECTION_CHUNK_WORDS);
     const sections = [];
     const costs = [];
-    const sectionPrompt = sectionSystemPrompt();
+    const sectionPrompt = sectionSystemPrompt(language);
 
     for (let i = 0; i < chunks.length; i += 1) {
         const userPrompt = [
@@ -227,7 +242,7 @@ async function transformVeryLongTranscript({ title, channel, transcript, llm }) 
         'Ordered section TLDRs:',
         sections.map((section, index) => `## Section ${index + 1} of ${sections.length}\n${section.tldr}`).join('\n\n'),
     ].join('\n');
-    const { text, cost } = await invokeArticleLlm(llm, TLDR_PROMPT, tldrPrompt);
+    const { text, cost } = await invokeArticleLlm(llm, `${TLDR_PROMPT}\n${languageInstruction(language)}`, tldrPrompt);
     costs.push(cost);
     const parsed = parseTldrResponse(text);
 
@@ -238,10 +253,10 @@ async function transformVeryLongTranscript({ title, channel, transcript, llm }) 
     };
 }
 
-export async function transformTranscript({ title, channel, transcript, llm = transformWithLLM }) {
+export async function transformTranscript({ title, channel, transcript, language = null, llm = transformWithLLM }) {
     const transcriptWords = wordCount(transcript);
     if (articleTransformStrategy(transcriptWords) === 'sectioned') {
-        return transformVeryLongTranscript({ title, channel, transcript, llm });
+        return transformVeryLongTranscript({ title, channel, transcript, language, llm });
     }
 
     const userPrompt = [
@@ -252,7 +267,7 @@ export async function transformTranscript({ title, channel, transcript, llm = tr
         transcript,
     ].join('\n');
 
-    const { text, cost } = await invokeArticleLlm(llm, SYSTEM_PROMPT, userPrompt);
+    const { text, cost } = await invokeArticleLlm(llm, articleSystemPrompt(language), userPrompt);
     const parsed = parseArticleResponse(text);
     return {
         tldr: parsed.tldr,

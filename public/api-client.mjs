@@ -87,6 +87,10 @@ export async function uploadLargeMediaRequest(file, { onProgress = () => {} } = 
     return sendRequest('POST', api(`/uploads/chunked/${id}/complete`), null);
 }
 
+export function rewriteArticleRequest(videoId, language) {
+    return postJson(`/videos/${encodeURIComponent(videoId)}/rewrite`, { language });
+}
+
 export function uploadMediaRequest(body, { onProgress = () => {} } = {}) {
     return sendRequest('POST', api('/uploads'), body, { onProgress });
 }

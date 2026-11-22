@@ -134,6 +134,7 @@ async function writeArticle(video, channelTitle, transcript) {
         title: video.title,
         channel: channelTitle,
         transcript: transcript.text,
+        language: video.article_language || null,
     });
 }
 
