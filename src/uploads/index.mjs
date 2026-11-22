@@ -368,6 +368,7 @@ export function appendUploadChunk(uploadId, offset, req) {
         const abort = () => { if (!failed) { aborted = true; failed = httpError(400, 'Chunk upload was interrupted.'); } out.end(); };
         req.on('error', abort);
         req.on('aborted', abort);
+        req.on('close', () => { if (!req.readableEnded) abort(); });
         out.on('error', err => { failed ||= httpError(500, `Could not store upload: ${err.message}`); });
         out.on('close', () => {
             session.busy = false;

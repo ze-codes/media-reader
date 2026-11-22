@@ -94,6 +94,8 @@ describe('chunked media uploads', () => {
             ? Readable.from([body])
             : new Readable({
                 read() {
+                    if (this.sent) return;
+                    this.sent = true;
                     this.push(body.subarray(0, failAfter));
                     setImmediate(() => this.destroy(new Error('connection reset')));
                 },
